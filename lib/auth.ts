@@ -13,6 +13,12 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
     }),
   ],
   callbacks: {
+    async signIn({ user }) {
+      if (!user.email) return false
+      const dbUser = await prisma.user.findUnique({ where: { email: user.email }, select: { blocked: true } })
+      if (dbUser?.blocked) return false // 차단된 계정 로그인 거부
+      return true
+    },
     session({ session, user }) {
       session.user.id = user.id
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -22,5 +28,6 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
   },
   pages: {
     signIn: '/',
+    error: '/',
   },
 })

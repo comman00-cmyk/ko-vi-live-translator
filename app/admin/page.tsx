@@ -1,7 +1,7 @@
 'use client'
 import { useEffect, useState } from 'react'
 import { useSession, signIn } from 'next-auth/react'
-import { ShieldCheck, Lock, Trash2, Plus } from 'lucide-react'
+import { ShieldCheck, Lock, Trash2, Plus, Ban, CheckCircle } from 'lucide-react'
 import AdminNav, { AdminTab } from '@/components/AdminNav'
 import TossCard from '@/components/TossCard'
 
@@ -16,6 +16,7 @@ interface Stats {
 
 interface UserEntry {
   id: string; name: string | null; email: string; role: string
+  blocked: boolean; blockedAt: string | null
   lastLoginAt: string | null; createdAt: string
   _count: { translationSessions: number }
 }
@@ -73,41 +74,180 @@ function Dashboard() {
 
 function Users() {
   const [users, setUsers] = useState<UserEntry[]>([])
+  const [loading, setLoading] = useState<string | null>(null)
+  const [confirmDelete, setConfirmDelete] = useState<string | null>(null)
+  const { data: session } = useSession()
+
   useEffect(() => { fetch('/api/admin/users').then(r => r.json()).then(setUsers) }, [])
 
+  const patch = async (id: string, body: object) => {
+    setLoading(id)
+    const res = await fetch('/api/admin/users', {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id, ...body }),
+    })
+    const updated = await res.json()
+    setUsers(prev => prev.map(u => u.id === id ? { ...u, ...updated } : u))
+    setLoading(null)
+  }
+
+  const deleteUser = async (id: string) => {
+    setLoading(id)
+    const res = await fetch('/api/admin/users', {
+      method: 'DELETE',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id }),
+    })
+    if (res.ok) setUsers(prev => prev.filter(u => u.id !== id))
+    else { const e = await res.json(); alert(e.error) }
+    setLoading(null); setConfirmDelete(null)
+  }
+
   return (
-    <TossCard>
-      <div className="overflow-x-auto">
-        <table className="w-full text-sm">
-          <thead>
-            <tr className="text-left text-gray-500 border-b border-gray-100">
-              <th className="pb-3 pr-4">이름</th>
-              <th className="pb-3 pr-4">이메일</th>
-              <th className="pb-3 pr-4">역할</th>
-              <th className="pb-3 pr-4">세션수</th>
-              <th className="pb-3">마지막 로그인</th>
-            </tr>
-          </thead>
-          <tbody>
-            {users.map(u => (
-              <tr key={u.id} className="border-b border-gray-50">
-                <td className="py-3 pr-4 font-medium">{u.name ?? '-'}</td>
-                <td className="py-3 pr-4 text-gray-600">{u.email}</td>
-                <td className="py-3 pr-4">
-                  <span className={`px-2 py-0.5 rounded text-xs font-medium ${u.role === 'admin' ? 'bg-purple-100 text-purple-700' : 'bg-gray-100 text-gray-600'}`}>
-                    {u.role}
-                  </span>
-                </td>
-                <td className="py-3 pr-4">{u._count.translationSessions}</td>
-                <td className="py-3 text-gray-500 text-xs">
-                  {u.lastLoginAt ? new Date(u.lastLoginAt).toLocaleDateString('ko-KR') : '-'}
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
+    <div className="space-y-3">
+      {/* 요약 배지 */}
+      <div className="flex gap-3">
+        <div className="bg-white border border-gray-100 rounded-xl px-4 py-2 text-sm">
+          <span className="text-gray-500">전체</span>
+          <span className="ml-2 font-bold text-gray-900">{users.length}</span>
+        </div>
+        <div className="bg-red-50 border border-red-100 rounded-xl px-4 py-2 text-sm">
+          <span className="text-red-500">차단됨</span>
+          <span className="ml-2 font-bold text-red-700">{users.filter(u => u.blocked).length}</span>
+        </div>
       </div>
-    </TossCard>
+
+      <TossCard>
+        <div className="overflow-x-auto">
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="text-left text-gray-400 border-b border-gray-100 text-xs">
+                <th className="pb-3 pr-4 font-medium">사용자</th>
+                <th className="pb-3 pr-4 font-medium">역할</th>
+                <th className="pb-3 pr-4 font-medium">상태</th>
+                <th className="pb-3 pr-4 font-medium">세션</th>
+                <th className="pb-3 pr-4 font-medium">마지막 로그인</th>
+                <th className="pb-3 font-medium">관리</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-gray-50">
+              {users.map(u => {
+                const isSelf = u.email === session?.user?.email
+                const busy   = loading === u.id
+                return (
+                  <tr key={u.id} className={`transition-colors ${u.blocked ? 'bg-red-50/40' : ''}`}>
+                    {/* 사용자 */}
+                    <td className="py-3 pr-4">
+                      <div className="flex items-center gap-2.5">
+                        <div className={`w-8 h-8 rounded-full flex items-center justify-center text-xs font-bold shrink-0 ${
+                          u.blocked ? 'bg-red-100 text-red-500' : 'bg-blue-100 text-blue-600'
+                        }`}>
+                          {(u.name ?? u.email)[0].toUpperCase()}
+                        </div>
+                        <div>
+                          <div className="font-medium text-gray-900 leading-tight">{u.name ?? '-'}</div>
+                          <div className="text-xs text-gray-400 leading-tight">{u.email}</div>
+                        </div>
+                        {isSelf && <span className="text-xs text-blue-400 bg-blue-50 px-1.5 py-0.5 rounded">나</span>}
+                      </div>
+                    </td>
+
+                    {/* 역할 */}
+                    <td className="py-3 pr-4">
+                      <select
+                        value={u.role}
+                        disabled={isSelf || busy}
+                        onChange={e => patch(u.id, { role: e.target.value })}
+                        className="text-xs border border-gray-200 rounded-lg px-2 py-1 bg-white disabled:opacity-50 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                      >
+                        <option value="user">user</option>
+                        <option value="admin">admin</option>
+                      </select>
+                    </td>
+
+                    {/* 상태 */}
+                    <td className="py-3 pr-4">
+                      {u.blocked ? (
+                        <span className="flex items-center gap-1 text-xs text-red-600 bg-red-50 border border-red-100 px-2 py-0.5 rounded-full w-fit">
+                          <Ban className="w-3 h-3" /> 차단됨
+                        </span>
+                      ) : (
+                        <span className="flex items-center gap-1 text-xs text-green-600 bg-green-50 border border-green-100 px-2 py-0.5 rounded-full w-fit">
+                          <CheckCircle className="w-3 h-3" /> 정상
+                        </span>
+                      )}
+                    </td>
+
+                    {/* 세션수 */}
+                    <td className="py-3 pr-4 text-gray-600 tabular-nums">{u._count.translationSessions}</td>
+
+                    {/* 마지막 로그인 */}
+                    <td className="py-3 pr-4 text-gray-400 text-xs">
+                      {u.lastLoginAt ? new Date(u.lastLoginAt).toLocaleDateString('ko-KR') : '-'}
+                    </td>
+
+                    {/* 관리 버튼 */}
+                    <td className="py-3">
+                      <div className="flex items-center gap-1.5">
+                        {!isSelf && (
+                          <>
+                            {u.blocked ? (
+                              <button
+                                onClick={() => patch(u.id, { action: 'unblock' })}
+                                disabled={busy}
+                                title="차단 해제"
+                                className="flex items-center gap-1 px-2.5 py-1.5 text-xs font-medium text-green-600 bg-green-50 hover:bg-green-100 border border-green-200 rounded-lg disabled:opacity-40 transition-colors"
+                              >
+                                <CheckCircle className="w-3.5 h-3.5" /> 해제
+                              </button>
+                            ) : (
+                              <button
+                                onClick={() => patch(u.id, { action: 'block' })}
+                                disabled={busy}
+                                title="차단"
+                                className="flex items-center gap-1 px-2.5 py-1.5 text-xs font-medium text-red-600 bg-red-50 hover:bg-red-100 border border-red-200 rounded-lg disabled:opacity-40 transition-colors"
+                              >
+                                <Ban className="w-3.5 h-3.5" /> 차단
+                              </button>
+                            )}
+                            {confirmDelete === u.id ? (
+                              <div className="flex items-center gap-1">
+                                <button
+                                  onClick={() => deleteUser(u.id)}
+                                  disabled={busy}
+                                  className="px-2 py-1.5 text-xs font-medium text-white bg-red-600 hover:bg-red-700 rounded-lg disabled:opacity-40 transition-colors"
+                                >확인</button>
+                                <button
+                                  onClick={() => setConfirmDelete(null)}
+                                  className="px-2 py-1.5 text-xs text-gray-500 hover:bg-gray-100 rounded-lg transition-colors"
+                                >취소</button>
+                              </div>
+                            ) : (
+                              <button
+                                onClick={() => setConfirmDelete(u.id)}
+                                title="삭제"
+                                className="p-1.5 text-gray-300 hover:text-red-500 hover:bg-red-50 rounded-lg transition-colors"
+                              >
+                                <Trash2 className="w-3.5 h-3.5" />
+                              </button>
+                            )}
+                          </>
+                        )}
+                        {busy && <span className="text-xs text-gray-300 animate-pulse ml-1">처리 중...</span>}
+                      </div>
+                    </td>
+                  </tr>
+                )
+              })}
+              {users.length === 0 && (
+                <tr><td colSpan={6} className="py-8 text-center text-gray-400">사용자가 없습니다.</td></tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+      </TossCard>
+    </div>
   )
 }
 
