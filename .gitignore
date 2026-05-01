@@ -36,3 +36,4 @@ prisma/migrations/
 # IDE
 .vscode/
 .idea/
+.env*.local
