@@ -298,15 +298,24 @@ export default function TranslatorPanel({ onTranscriptChange, onSessionSave }: P
       // ────────────────────────────────────────────────────────
 
       const lang = detectLang(text)
-      // 원문 필드만 업데이트 — delta로 쌓인 번역 필드는 건드리지 않음
+      // 원문 언어 확정 + 번역 라우팅 교정
+      // delta 감지 결과와 무관하게 최종 정답으로 덮어씀
       setPairs(prev => {
         const idx = prev.findIndex(p => p.id === pairId)
         if (idx === -1) return prev
         const p = prev[idx]
         const next = [...prev]
-        next[idx] = lang === 'ko'
-          ? { ...p, sourceLang: 'ko', koText: text }
-          : { ...p, sourceLang: 'vi', viText: text }
+        if (lang === 'ko') {
+          // 한국어 원문 → 번역은 viText에 있어야 함
+          // delta 감지가 잘못 viText→koText로 옮겼다면 다시 viText로
+          const trnText = p.sourceLang === 'vi' ? p.koText : p.viText
+          next[idx] = { ...p, sourceLang: 'ko', koText: text, viText: trnText }
+        } else {
+          // 베트남어 원문 → 번역은 koText에 있어야 함
+          // delta 감지 미작동으로 번역이 viText에 남아있다면 koText로 이동
+          const trnText = p.sourceLang === 'ko' ? p.viText : p.koText
+          next[idx] = { ...p, sourceLang: 'vi', viText: text, koText: trnText }
+        }
         return next
       })
       animateSrc(pairId, text)
