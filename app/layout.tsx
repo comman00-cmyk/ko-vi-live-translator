@@ -4,7 +4,7 @@ import './globals.css'
 import { SessionProvider } from 'next-auth/react'
 import LoginButton from '@/components/LoginButton'
 import Link from 'next/link'
-import { Languages } from 'lucide-react'
+import { LogoWordmark } from '@/components/Logo'
 
 const inter = Inter({ subsets: ['latin'] })
 
@@ -20,9 +20,8 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
         <SessionProvider>
           <header className="bg-white border-b border-gray-100 sticky top-0 z-50">
             <div className="max-w-5xl mx-auto px-4 h-16 flex items-center justify-between">
-              <Link href="/" className="flex items-center gap-2 font-bold text-blue-600 text-lg">
-                <Languages className="w-5 h-5" />
-                KO-VI
+              <Link href="/">
+                <LogoWordmark variant="A" />
               </Link>
               <nav className="hidden sm:flex items-center gap-6 text-sm text-gray-600">
                 <Link href="/translate" className="hover:text-blue-600 transition-colors">통역</Link>
