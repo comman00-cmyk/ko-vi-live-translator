@@ -195,6 +195,8 @@ export default function TranslatorPanel({ onTranscriptChange, onSessionSave }: P
   const speechStartedAtRef = useRef<number>(0)
   const speechDurationRef  = useRef<number>(0)
   const typingTimers       = useRef<Record<string, ReturnType<typeof setInterval>>>({})
+  // OpenAI item_id → pair id (transcription이 response보다 늦게 도착해도 매칭 보장)
+  const itemToPairRef      = useRef<Record<string, string>>({})
 
   const setStatusSafe = (s: Status) => { statusRef.current = s; setStatus(s) }
 
@@ -210,6 +212,7 @@ export default function TranslatorPanel({ onTranscriptChange, onSessionSave }: P
     if (timeoutRef.current) { clearTimeout(timeoutRef.current); timeoutRef.current = null }
     Object.values(typingTimers.current).forEach(clearInterval)
     typingTimers.current = {}
+    itemToPairRef.current = {}
     const dc = dcRef.current
     if (dc) { dc.onopen = dc.onclose = dc.onmessage = dc.onerror = null; dc.close(); dcRef.current = null }
     const pc = pcRef.current
@@ -248,12 +251,10 @@ export default function TranslatorPanel({ onTranscriptChange, onSessionSave }: P
     }, speed)
   }, [])
 
-  const discardCurrentPair = useCallback(() => {
-    const id = currentPairRef.current
-    if (!id) return
-    if (typingTimers.current[id]) { clearInterval(typingTimers.current[id]); delete typingTimers.current[id] }
-    setPairs(prev => prev.filter(p => p.id !== id))
-    currentPairRef.current = null
+  const discardPair = useCallback((pairId: string) => {
+    if (typingTimers.current[pairId]) { clearInterval(typingTimers.current[pairId]); delete typingTimers.current[pairId] }
+    setPairs(prev => prev.filter(p => p.id !== pairId))
+    if (currentPairRef.current === pairId) currentPairRef.current = null
   }, [])
 
   const handleMsg = useCallback((e: MessageEvent) => {
@@ -265,8 +266,12 @@ export default function TranslatorPanel({ onTranscriptChange, onSessionSave }: P
       speechStartedAtRef.current = Date.now()
       speechDurationRef.current = 0
       t0Ref.current = Date.now()
-      const id = makeId(); currentPairRef.current = id
-      upsertPair(id, { translating: true, srcTyped: '' }); return
+      const oaiItemId = msg.item_id as string | undefined
+      const pairId = makeId()
+      currentPairRef.current = pairId
+      // item_id로 pair를 추적 — transcription이 response.text.done보다 늦게 와도 매칭 가능
+      if (oaiItemId) itemToPairRef.current[oaiItemId] = pairId
+      upsertPair(pairId, { translating: true, srcTyped: '' }); return
     }
 
     if (type === 'input_audio_buffer.speech_stopped') {
@@ -276,24 +281,35 @@ export default function TranslatorPanel({ onTranscriptChange, onSessionSave }: P
 
     if (type === 'conversation.item.input_audio_transcription.completed') {
       const text = (msg.transcript as string ?? '').trim()
+      const oaiItemId = msg.item_id as string | undefined
+
+      // item_id → pair 매핑 우선, 없으면 currentPairRef 사용
+      const pairId = (oaiItemId && itemToPairRef.current[oaiItemId]) || currentPairRef.current
+      if (oaiItemId) delete itemToPairRef.current[oaiItemId]
 
       // ── 헛소리 필터 ──────────────────────────────────────────
-      // 1) 빈 문자열 또는 너무 짧은 결과 폐기
-      if (!text || text.length < MIN_TRANSCRIPT_LEN) { discardCurrentPair(); return }
-
-      // 2) 대응하는 speech_started 없으면 폐기 (고아 페어 방지)
-      if (!currentPairRef.current) return
-
-      // 3) 400ms 미만 발화는 노이즈로 폐기
+      if (!text || text.length < MIN_TRANSCRIPT_LEN) {
+        if (pairId) discardPair(pairId); return
+      }
+      if (!pairId) return  // 대응하는 speech_started 없음
       if (speechDurationRef.current > 0 && speechDurationRef.current < MIN_SPEECH_MS) {
-        discardCurrentPair(); speechDurationRef.current = 0; return
+        discardPair(pairId); speechDurationRef.current = 0; return
       }
       // ────────────────────────────────────────────────────────
 
-      const id   = currentPairRef.current
       const lang = detectLang(text)
-      upsertPair(id, { sourceLang: lang, koText: lang === 'ko' ? text : '', viText: lang === 'vi' ? text : '' })
-      animateSrc(id, text)
+      // 원문 필드만 업데이트 — delta로 쌓인 번역 필드는 건드리지 않음
+      setPairs(prev => {
+        const idx = prev.findIndex(p => p.id === pairId)
+        if (idx === -1) return prev
+        const p = prev[idx]
+        const next = [...prev]
+        next[idx] = lang === 'ko'
+          ? { ...p, sourceLang: 'ko', koText: text }
+          : { ...p, sourceLang: 'vi', viText: text }
+        return next
+      })
+      animateSrc(pairId, text)
       return
     }
 
@@ -304,7 +320,21 @@ export default function TranslatorPanel({ onTranscriptChange, onSessionSave }: P
       setPairs(prev => {
         const idx = prev.findIndex(p => p.id === id); if (idx === -1) return prev
         const p = prev[idx]; const next = [...prev]
-        next[idx] = p.sourceLang === 'ko' ? { ...p, viText: p.viText + delta } : { ...p, koText: p.koText + delta }
+
+        // 번역 텍스트의 언어로 sourceLang을 실시간 보정
+        // 번역에 한글 등장 → 발화자는 베트남어 → sourceLang 'vi'로 수정
+        if (p.sourceLang === 'ko') {
+          const provisional = p.viText + delta
+          if (/[가-힣ᄀ-ᇿ]/.test(provisional)) {
+            // 베트남어 발화였음 — viText에 잘못 쌓인 내용을 koText로 이동
+            next[idx] = { ...p, sourceLang: 'vi', koText: provisional, viText: '' }
+          } else {
+            next[idx] = { ...p, viText: provisional }
+          }
+        } else {
+          // sourceLang 'vi' 확정 — 번역(한국어)은 koText
+          next[idx] = { ...p, koText: p.koText + delta }
+        }
         return next
       }); return
     }
@@ -329,7 +359,7 @@ export default function TranslatorPanel({ onTranscriptChange, onSessionSave }: P
         return prev
       }); currentPairRef.current = null
     }
-  }, [upsertPair, animateSrc, discardCurrentPair])
+  }, [upsertPair, animateSrc, discardPair])
 
   useEffect(() => {
     const ko = pairs.map(p => p.koText).filter(Boolean).join('\n')
