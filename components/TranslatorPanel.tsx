@@ -12,6 +12,7 @@ interface ConvPair {
   viText: string
   sourceLang: 'ko' | 'vi'
   translating: boolean
+  srcTyped: string   // animated source text (typing effect)
 }
 
 interface SessionSave {
@@ -29,9 +30,12 @@ interface Props {
 }
 
 const REALTIME_MODEL = 'gpt-4o-realtime-preview'
+const MIN_SPEECH_MS = 400    // 400ms 미만 발화는 노이즈로 간주
+const MIN_TRANSCRIPT_LEN = 2 // 2자 미만 인식 결과 폐기
 
 function detectLang(t: string): 'ko' | 'vi' { return /[가-힣ᄀ-ᇿ]/.test(t) ? 'ko' : 'vi' }
 function makeId() { return Math.random().toString(36).slice(2, 10) }
+
 function waitForIce(pc: RTCPeerConnection, ms = 7000): Promise<void> {
   return new Promise(r => {
     if (pc.iceGatheringState === 'complete') { r(); return }
@@ -44,66 +48,66 @@ function waitForIce(pc: RTCPeerConnection, ms = 7000): Promise<void> {
   })
 }
 
-// 대화 카드 — 원문(위) + 번역(아래) 수직 구조
-function PairCard({ pair, isActive }: { pair: ConvPair; isActive: boolean }) {
-  const srcText = pair.sourceLang === 'ko' ? pair.koText : pair.viText
-  const trnText = pair.sourceLang === 'ko' ? pair.viText : pair.koText
-  const srcFlag = pair.sourceLang === 'ko' ? '🇰🇷' : '🇻🇳'
-  const trnFlag = pair.sourceLang === 'ko' ? '🇻🇳' : '🇰🇷'
-  const srcLabel = pair.sourceLang === 'ko' ? '한국어 · 원문' : '베트남어 · 원문'
-  const trnLabel = pair.sourceLang === 'ko' ? '베트남어 · 번역' : '한국어 · 번역'
+function Cursor({ color = '#6b7280' }: { color?: string }) {
+  return (
+    <span
+      className="inline-block w-[2px] rounded-full animate-pulse ml-0.5 align-text-bottom"
+      style={{ height: '1em', backgroundColor: color, opacity: 0.8 }}
+    />
+  )
+}
+
+// 세로 레이아웃 — 원문 + 번역을 한 블록으로
+function VerticalEntry({ pair, isActive }: { pair: ConvPair; isActive: boolean }) {
+  const srcLang = pair.sourceLang
+  const trnLang = srcLang === 'ko' ? 'vi' : 'ko'
+  const srcFlag = srcLang === 'ko' ? '🇰🇷' : '🇻🇳'
+  const trnFlag = trnLang === 'ko' ? '🇰🇷' : '🇻🇳'
+  const srcText = pair.srcTyped
+  const trnText = trnLang === 'ko' ? pair.koText : pair.viText
+  const trnStreaming = pair.translating && trnText.length > 0
+  const trnPending   = pair.translating && trnText.length === 0 && srcText.length > 0
 
   return (
-    <div className={`rounded-2xl border p-4 transition-all duration-200 ${
-      isActive ? 'bg-blue-50 border-blue-200 shadow-md' : 'bg-white border-gray-100 shadow-sm'
-    }`}>
-      {/* 원문 */}
-      <div className="mb-3">
-        <div className="flex items-center gap-1.5 mb-1">
-          <span className="text-sm leading-none">{srcFlag}</span>
-          <span className="text-xs font-medium text-gray-400">{srcLabel}</span>
-          {isActive && !srcText && (
-            <span className="ml-auto text-xs text-gray-300 italic">인식 중...</span>
+    <div className={`transition-opacity duration-300 ${isActive ? 'opacity-100' : 'opacity-60'}`}>
+      {/* 원문 줄 */}
+      <div className="flex items-start gap-2">
+        <span className="text-base leading-none mt-0.5 shrink-0 select-none">{srcFlag}</span>
+        <p className={`text-sm leading-relaxed break-words ${isActive ? 'text-gray-800' : 'text-gray-500'}`}>
+          {srcText || (isActive && !trnText ? (
+            <span className="text-gray-300 text-xs italic">음성 인식 중<Cursor color="#d1d5db" /></span>
+          ) : '—')}
+          {/* 인식 완료됐지만 번역 아직 안 온 경우 커서 */}
+          {isActive && srcText && !trnText && !pair.translating && (
+            <Cursor color="#9ca3af" />
           )}
-        </div>
-        <p className="text-sm text-gray-600 leading-relaxed min-h-[20px]">
-          {srcText || (isActive ? <span className="text-gray-300 italic">음성 인식 중...</span> : '—')}
         </p>
       </div>
 
-      {/* 번역 */}
-      <div className={`border-t pt-3 ${isActive ? 'border-blue-100' : 'border-gray-100'}`}>
-        <div className="flex items-center gap-1.5 mb-1">
-          <span className="text-sm leading-none">{trnFlag}</span>
-          <span className="text-xs font-medium text-gray-400">{trnLabel}</span>
-          {pair.translating && (
-            <span className="flex items-center gap-1 text-xs text-blue-400 ml-auto font-medium">
-              <Loader2 className="w-3 h-3 animate-spin" /> 번역 중
-            </span>
-          )}
+      {/* 번역 줄 */}
+      {(trnText || pair.translating) && (
+        <div className="flex items-start gap-1.5 mt-1.5 ml-6">
+          <span className="text-xs text-gray-300 mt-0.5 shrink-0 select-none">→</span>
+          <span className="text-sm leading-none mt-0.5 shrink-0 select-none">{trnFlag}</span>
+          <p className={`text-sm font-medium leading-relaxed break-words ${isActive ? 'text-blue-700' : 'text-gray-500 font-normal'}`}>
+            {trnPending ? (
+              <span className="text-blue-300 text-xs font-normal">
+                번역 중<Cursor color="#93c5fd" />
+              </span>
+            ) : (
+              <>
+                {trnText}
+                {trnStreaming && <Cursor color="#3b82f6" />}
+              </>
+            )}
+          </p>
         </div>
-        <p className={`text-base font-semibold leading-relaxed min-h-[24px] ${
-          isActive && trnText ? 'text-blue-900' : 'text-gray-800'
-        }`}>
-          {trnText ? (
-            <>
-              {trnText}
-              {pair.translating && (
-                <span className="inline-block w-[2px] h-5 bg-blue-500 animate-pulse ml-0.5 align-middle rounded-full" />
-              )}
-            </>
-          ) : pair.translating ? (
-            <span className="text-blue-300 font-normal text-sm">번역 중...</span>
-          ) : (
-            <span className="text-gray-200 font-normal text-sm">—</span>
-          )}
-        </p>
-      </div>
+      )}
     </div>
   )
 }
 
-// 가로 레이아웃용 언어별 독립 패널
+// 가로 레이아웃 — 언어별 패널 (타이핑 스트림)
 function LangPanel({ lang, pairs, activePairId }: {
   lang: 'ko' | 'vi'
   pairs: ConvPair[]
@@ -117,10 +121,6 @@ function LangPanel({ lang, pairs, activePairId }: {
     ref.current?.scrollTo({ top: ref.current.scrollHeight, behavior: 'smooth' })
   }, [pairs])
 
-  const Cursor = () => (
-    <span className="inline-block w-[2px] h-[14px] bg-blue-500 animate-pulse ml-0.5 align-middle rounded-full" />
-  )
-
   return (
     <div className="flex-1 flex flex-col min-h-0 bg-white rounded-2xl border border-gray-100 shadow-sm overflow-hidden">
       <div className="shrink-0 flex items-center gap-2 px-4 py-3 border-b border-gray-100 bg-gray-50">
@@ -128,35 +128,43 @@ function LangPanel({ lang, pairs, activePairId }: {
         <span className="text-sm font-semibold text-gray-700">{name}</span>
       </div>
 
-      <div ref={ref} className="flex-1 overflow-y-auto p-3 space-y-2"
-        style={{ scrollbarWidth: 'thin', scrollbarColor: '#e5e7eb transparent' }}>
+      <div
+        ref={ref}
+        className="flex-1 overflow-y-auto px-4 py-3 space-y-2.5"
+        style={{ scrollbarWidth: 'thin', scrollbarColor: '#e5e7eb transparent' }}
+      >
         {pairs.length === 0 ? (
           <p className="text-xs text-gray-300 text-center pt-8">말씀하시면 여기에 표시됩니다</p>
         ) : pairs.map(pair => {
           const isActive   = pair.id === activePairId || pair.translating
           const isSource   = pair.sourceLang === lang
-          const text       = lang === 'ko' ? pair.koText : pair.viText
-          const streaming  = isActive && !isSource && pair.translating
+          const text       = isSource ? pair.srcTyped : (lang === 'ko' ? pair.koText : pair.viText)
+          const streaming  = !isSource && pair.translating && text.length > 0
+          const pending    = !isSource && pair.translating && text.length === 0
+          const srcActive  = isSource && isActive && !text
 
           if (!text && !isActive) return null
 
           return (
-            <div key={pair.id} className={`px-3 py-2.5 rounded-xl text-sm leading-relaxed transition-all duration-200 ${
-              isActive
-                ? isSource
-                  ? 'bg-amber-50 border border-amber-100 text-gray-700'
-                  : 'bg-blue-50 border border-blue-100'
-                : 'text-gray-500'
-            }`}>
-              {text ? (
-                <span className={isActive && !isSource ? 'text-blue-800 font-medium' : ''}>
-                  {text}{streaming && <Cursor />}
+            <div key={pair.id} className={`text-sm leading-relaxed break-words transition-opacity ${isActive ? 'opacity-100' : 'opacity-55'}`}>
+              {srcActive ? (
+                <span className="text-xs text-gray-300 italic">
+                  인식 중<Cursor color="#d1d5db" />
                 </span>
-              ) : isActive ? (
-                streaming
-                  ? <span className="text-blue-400">번역 중...<Cursor /></span>
-                  : <span className="text-gray-300 italic text-xs">인식 중...</span>
-              ) : null}
+              ) : pending ? (
+                <span className="text-xs text-blue-300 italic">
+                  번역 중<Cursor color="#93c5fd" />
+                </span>
+              ) : (
+                <span className={isSource
+                  ? (isActive ? 'text-gray-800' : 'text-gray-500')
+                  : (isActive ? 'text-blue-700 font-medium' : 'text-gray-500')
+                }>
+                  {text}
+                  {streaming && <Cursor color="#3b82f6" />}
+                  {isSource && isActive && text && !pair.translating && <Cursor color="#9ca3af" />}
+                </span>
+              )}
             </div>
           )
         })}
@@ -174,20 +182,22 @@ export default function TranslatorPanel({ onTranscriptChange, onSessionSave }: P
   const [voiceOutput, setVoiceOutput] = useState(false)
   const [layout, setLayout]           = useState<Layout>('vertical')
 
-  const pcRef          = useRef<RTCPeerConnection | null>(null)
-  const dcRef          = useRef<RTCDataChannel | null>(null)
-  const audioElRef     = useRef<HTMLAudioElement | null>(null)
-  const startedAtRef   = useRef<Date>(new Date())
-  const t0Ref          = useRef(0)
-  const currentPairRef = useRef<string | null>(null)
-  const statusRef      = useRef<Status>('disconnected')
-  const voiceRef       = useRef(false)
-  const timeoutRef     = useRef<ReturnType<typeof setTimeout> | null>(null)
-  const feedRef        = useRef<HTMLDivElement>(null)
+  const pcRef             = useRef<RTCPeerConnection | null>(null)
+  const dcRef             = useRef<RTCDataChannel | null>(null)
+  const audioElRef        = useRef<HTMLAudioElement | null>(null)
+  const startedAtRef      = useRef<Date>(new Date())
+  const t0Ref             = useRef(0)
+  const currentPairRef    = useRef<string | null>(null)
+  const statusRef         = useRef<Status>('disconnected')
+  const voiceRef          = useRef(false)
+  const timeoutRef        = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const feedRef           = useRef<HTMLDivElement>(null)
+  const speechStartedAtRef = useRef<number>(0)
+  const speechDurationRef  = useRef<number>(0)
+  const typingTimers       = useRef<Record<string, ReturnType<typeof setInterval>>>({})
 
   const setStatusSafe = (s: Status) => { statusRef.current = s; setStatus(s) }
 
-  // 새 pair 추가되거나 텍스트 업데이트 시 자동 스크롤
   useEffect(() => {
     const el = feedRef.current
     if (!el) return
@@ -198,6 +208,8 @@ export default function TranslatorPanel({ onTranscriptChange, onSessionSave }: P
 
   const destroyConnection = () => {
     if (timeoutRef.current) { clearTimeout(timeoutRef.current); timeoutRef.current = null }
+    Object.values(typingTimers.current).forEach(clearInterval)
+    typingTimers.current = {}
     const dc = dcRef.current
     if (dc) { dc.onopen = dc.onclose = dc.onmessage = dc.onerror = null; dc.close(); dcRef.current = null }
     const pc = pcRef.current
@@ -213,9 +225,35 @@ export default function TranslatorPanel({ onTranscriptChange, onSessionSave }: P
   const upsertPair = useCallback((id: string, patch: Partial<ConvPair>) => {
     setPairs(prev => {
       const idx = prev.findIndex(p => p.id === id)
-      if (idx === -1) return [...prev, { id, koText: '', viText: '', sourceLang: 'ko', translating: false, ...patch }]
+      if (idx === -1) return [...prev, { id, koText: '', viText: '', sourceLang: 'ko', translating: false, srcTyped: '', ...patch }]
       const next = [...prev]; next[idx] = { ...next[idx], ...patch }; return next
     })
+  }, [])
+
+  // Source text typing animation — complete in ~600ms regardless of length
+  const animateSrc = useCallback((id: string, text: string) => {
+    if (typingTimers.current[id]) clearInterval(typingTimers.current[id])
+    let i = 0
+    const speed = Math.max(12, Math.min(50, Math.floor(600 / text.length)))
+    typingTimers.current[id] = setInterval(() => {
+      i++
+      setPairs(prev => {
+        const idx = prev.findIndex(p => p.id === id)
+        if (idx === -1) { clearInterval(typingTimers.current[id]); return prev }
+        const next = [...prev]
+        next[idx] = { ...next[idx], srcTyped: text.slice(0, i) }
+        return next
+      })
+      if (i >= text.length) { clearInterval(typingTimers.current[id]); delete typingTimers.current[id] }
+    }, speed)
+  }, [])
+
+  const discardCurrentPair = useCallback(() => {
+    const id = currentPairRef.current
+    if (!id) return
+    if (typingTimers.current[id]) { clearInterval(typingTimers.current[id]); delete typingTimers.current[id] }
+    setPairs(prev => prev.filter(p => p.id !== id))
+    currentPairRef.current = null
   }, [])
 
   const handleMsg = useCallback((e: MessageEvent) => {
@@ -224,18 +262,44 @@ export default function TranslatorPanel({ onTranscriptChange, onSessionSave }: P
     const type = msg.type as string
 
     if (type === 'input_audio_buffer.speech_started') {
+      speechStartedAtRef.current = Date.now()
+      speechDurationRef.current = 0
       t0Ref.current = Date.now()
       const id = makeId(); currentPairRef.current = id
-      upsertPair(id, { translating: true }); return
+      upsertPair(id, { translating: true, srcTyped: '' }); return
     }
+
+    if (type === 'input_audio_buffer.speech_stopped') {
+      speechDurationRef.current = Date.now() - speechStartedAtRef.current
+      return
+    }
+
     if (type === 'conversation.item.input_audio_transcription.completed') {
-      const text = (msg.transcript as string ?? '').trim(); if (!text) return
+      const text = (msg.transcript as string ?? '').trim()
+
+      // ── 헛소리 필터 ──────────────────────────────────────────
+      // 1) 빈 문자열 또는 너무 짧은 결과 폐기
+      if (!text || text.length < MIN_TRANSCRIPT_LEN) { discardCurrentPair(); return }
+
+      // 2) 대응하는 speech_started 없으면 폐기 (고아 페어 방지)
+      if (!currentPairRef.current) return
+
+      // 3) 400ms 미만 발화는 노이즈로 폐기
+      if (speechDurationRef.current > 0 && speechDurationRef.current < MIN_SPEECH_MS) {
+        discardCurrentPair(); speechDurationRef.current = 0; return
+      }
+      // ────────────────────────────────────────────────────────
+
+      const id   = currentPairRef.current
       const lang = detectLang(text)
-      const id = currentPairRef.current ?? makeId(); currentPairRef.current = id
-      upsertPair(id, { sourceLang: lang, koText: lang === 'ko' ? text : '', viText: lang === 'vi' ? text : '' }); return
+      upsertPair(id, { sourceLang: lang, koText: lang === 'ko' ? text : '', viText: lang === 'vi' ? text : '' })
+      animateSrc(id, text)
+      return
     }
+
     if (type === 'response.text.delta') {
-      const delta = (msg.delta as string) ?? ''; const id = currentPairRef.current
+      const delta = (msg.delta as string) ?? ''
+      const id = currentPairRef.current
       if (!id || !delta) return
       setPairs(prev => {
         const idx = prev.findIndex(p => p.id === id); if (idx === -1) return prev
@@ -244,6 +308,7 @@ export default function TranslatorPanel({ onTranscriptChange, onSessionSave }: P
         return next
       }); return
     }
+
     if (type === 'response.text.done') {
       const id = currentPairRef.current
       if (id) {
@@ -251,8 +316,10 @@ export default function TranslatorPanel({ onTranscriptChange, onSessionSave }: P
         upsertPair(id, { translating: false }); currentPairRef.current = null
       }; return
     }
+
     if (type === 'response.audio_transcript.done') {
-      const text = (msg.transcript as string ?? '').trim(); const id = currentPairRef.current
+      const text = (msg.transcript as string ?? '').trim()
+      const id = currentPairRef.current
       if (!id || !text) return
       setPairs(prev => {
         const idx = prev.findIndex(p => p.id === id); if (idx === -1) return prev
@@ -262,7 +329,7 @@ export default function TranslatorPanel({ onTranscriptChange, onSessionSave }: P
         return prev
       }); currentPairRef.current = null
     }
-  }, [upsertPair])
+  }, [upsertPair, animateSrc, discardCurrentPair])
 
   useEffect(() => {
     const ko = pairs.map(p => p.koText).filter(Boolean).join('\n')
@@ -289,13 +356,12 @@ export default function TranslatorPanel({ onTranscriptChange, onSessionSave }: P
         const isSafari = /safari/i.test(navigator.userAgent) && !/chrome/i.test(navigator.userAgent)
         destroyConnection(); setStatusSafe('error')
         setErrorMsg(isSafari
-          ? '연결 시간 초과 (20초). Safari에서는 STUN 후보 제한으로 연결이 실패할 수 있습니다. Chrome 또는 Firefox 사용을 권장합니다. (F12 → [WebRTC] 로그 참고)'
+          ? '연결 시간 초과 (20초). Safari에서는 STUN 후보 제한으로 연결이 실패할 수 있습니다. Chrome 또는 Firefox 사용을 권장합니다.'
           : '연결 시간 초과 (20초). F12 콘솔의 [WebRTC] 로그를 확인해 주세요.')
       }
     }, 20000)
 
     try {
-      // Safari AudioContext unlock — must happen inside user-gesture chain
       try {
         type WA = { webkitAudioContext?: typeof AudioContext }
         const AC = window.AudioContext ?? (window as unknown as WA).webkitAudioContext
@@ -341,7 +407,19 @@ export default function TranslatorPanel({ onTranscriptChange, onSessionSave }: P
         log('dc.onopen ✓')
         if (timeoutRef.current) { clearTimeout(timeoutRef.current); timeoutRef.current = null }
         setStatusSafe('connected'); startedAtRef.current = new Date()
-        sendDC({ type: 'session.update', session: { modalities: voiceRef.current ? ['text','audio'] : ['text'], input_audio_transcription: { model: 'whisper-1' }, turn_detection: { type: 'server_vad', threshold: 0.5, prefix_padding_ms: 200, silence_duration_ms: 700 } } })
+        sendDC({
+          type: 'session.update',
+          session: {
+            modalities: voiceRef.current ? ['text','audio'] : ['text'],
+            input_audio_transcription: { model: 'whisper-1' },
+            turn_detection: {
+              type: 'server_vad',
+              threshold: 0.7,           // 높일수록 더 명확한 발화만 인식
+              prefix_padding_ms: 300,
+              silence_duration_ms: 800,
+            },
+          },
+        })
       }
       dc.onmessage = handleMsg
       dc.onclose   = () => { log('dc.onclose'); if (statusRef.current === 'connected') setStatusSafe('disconnected'); audioEl.remove(); audioElRef.current = null }
@@ -385,7 +463,11 @@ export default function TranslatorPanel({ onTranscriptChange, onSessionSave }: P
   }
 
   const disconnect = () => { destroyConnection(); setStatusSafe('disconnected'); setErrorMsg(null) }
-  const reset = () => { setPairs([]); setLatencyMs(null); setErrorMsg(null); currentPairRef.current = null; onTranscriptChange?.('','') }
+  const reset = () => {
+    Object.values(typingTimers.current).forEach(clearInterval)
+    typingTimers.current = {}
+    setPairs([]); setLatencyMs(null); setErrorMsg(null); currentPairRef.current = null; onTranscriptChange?.('','')
+  }
   const handleSave = () => {
     const ko = pairs.map(p => p.koText).filter(Boolean).join('\n')
     const vi = pairs.map(p => p.viText).filter(Boolean).join('\n')
@@ -393,14 +475,14 @@ export default function TranslatorPanel({ onTranscriptChange, onSessionSave }: P
     onSessionSave?.({ direction: 'auto', originalText: ko, translatedText: vi, startedAt: startedAtRef.current, endedAt: new Date(), latencyMs: latencyMs ?? undefined })
   }
 
-  const isActive   = status === 'connected' || status === 'connecting'
-  const hasContent = pairs.length > 0
+  const isActive    = status === 'connected' || status === 'connecting'
+  const hasContent  = pairs.length > 0
   const activePairId = currentPairRef.current
 
   return (
     <div className="flex flex-col" style={{ height: 'calc(100dvh - 9rem)' }}>
 
-      {/* ① 상태바 + 레이아웃 토글 */}
+      {/* 상태바 + 레이아웃 토글 */}
       <div className="shrink-0 flex items-center justify-between px-4 py-2.5 bg-white rounded-2xl shadow-sm border border-gray-100 mb-3">
         <div className="flex items-center gap-2.5">
           <StatusBadge status={status} />
@@ -410,7 +492,6 @@ export default function TranslatorPanel({ onTranscriptChange, onSessionSave }: P
             </span>
           )}
         </div>
-        {/* 레이아웃 토글 */}
         <div className="flex bg-gray-100 rounded-lg p-0.5 gap-0.5">
           <button
             onClick={() => setLayout('vertical')}
@@ -433,22 +514,20 @@ export default function TranslatorPanel({ onTranscriptChange, onSessionSave }: P
         </div>
       </div>
 
-      {/* ② 대화 피드 — 세로/가로 전환 */}
+      {/* 대화 피드 */}
       {layout === 'horizontal' ? (
-        /* 가로: 한국어 패널 | 베트남어 패널 */
         <div className="flex gap-3 flex-1 min-h-0">
           <LangPanel lang="ko" pairs={pairs} activePairId={activePairId} />
           <LangPanel lang="vi" pairs={pairs} activePairId={activePairId} />
         </div>
       ) : (
-        /* 세로: 수직 카드 피드 */
         <div
           ref={feedRef}
-          className="flex-1 overflow-y-auto space-y-3 pr-0.5"
+          className="flex-1 overflow-y-auto bg-white rounded-2xl border border-gray-100 shadow-sm px-5 py-4"
           style={{ scrollbarWidth: 'thin', scrollbarColor: '#e5e7eb transparent' }}
         >
           {pairs.length === 0 ? (
-            <div className="flex flex-col items-center justify-center h-full gap-3 text-center py-12">
+            <div className="flex flex-col items-center justify-center h-full gap-3 text-center">
               <div className={`w-14 h-14 rounded-2xl flex items-center justify-center transition-colors ${
                 status === 'connected' ? 'bg-blue-50' : 'bg-gray-50'
               }`}>
@@ -475,21 +554,23 @@ export default function TranslatorPanel({ onTranscriptChange, onSessionSave }: P
               </div>
             </div>
           ) : (
-            <>
-              {pairs.map(pair => (
-                <PairCard
-                  key={pair.id}
-                  pair={pair}
-                  isActive={pair.id === activePairId || pair.translating}
-                />
+            <div className="space-y-0">
+              {pairs.map((pair, i) => (
+                <div key={pair.id}>
+                  {i > 0 && <div className="border-t border-gray-100 my-3" />}
+                  <VerticalEntry
+                    pair={pair}
+                    isActive={pair.id === activePairId || pair.translating}
+                  />
+                </div>
               ))}
               <div className="h-2" />
-            </>
+            </div>
           )}
         </div>
       )}
 
-      {/* ③ 컨트롤 — 항상 하단 고정, 버튼 4개 */}
+      {/* 컨트롤 바 */}
       <div className="shrink-0 mt-3 bg-white rounded-2xl shadow-sm border border-gray-100 p-4">
         <div className="flex items-center gap-2">
           {!isActive ? (
@@ -523,7 +604,6 @@ export default function TranslatorPanel({ onTranscriptChange, onSessionSave }: P
           </button>
         </div>
 
-        {/* 인라인 상태 메시지 */}
         {status === 'connecting' && (
           <p className="mt-2.5 text-xs text-yellow-500 flex items-center gap-1.5">
             <Loader2 className="w-3 h-3 animate-spin" /> 연결 중... 마이크 권한을 허용해 주세요.
