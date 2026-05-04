@@ -25,9 +25,9 @@ export async function createRealtimeSession() {
       input_audio_transcription: { model: 'whisper-1' },
       turn_detection: {
         type: 'server_vad',
-        threshold: 0.7,           // 높일수록 노이즈 무시, 명확한 발화만 인식
-        prefix_padding_ms: 300,
-        silence_duration_ms: 800,
+        threshold: 0.65,
+        prefix_padding_ms: 200,
+        silence_duration_ms: 600,
       },
     }),
   })
